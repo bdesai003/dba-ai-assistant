@@ -1,0 +1,8 @@
+reports/
+__pycache__/
+*.pyc
+config.yaml
+.env
+*.log
+.venv/
+conversation.txt

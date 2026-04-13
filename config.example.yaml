@@ -1,0 +1,69 @@
+# ──────────────────────────────────────────────────────────────────
+# DBA AI Assistant — Configuration
+# Copy this file to config.yaml and edit with your settings.
+# ──────────────────────────────────────────────────────────────────
+
+# SQL Server Connection
+sql_server:
+  server: "YOUR_SERVER_NAME"            # e.g., "sqlprod01.corp.local" or "sqlprod01,1433"
+  database: "master"                    # Default database for DMV queries
+  # --- Windows Authentication (recommended) ---
+  trusted_connection: true
+  # --- OR SQL Authentication ---
+  # trusted_connection: false
+  # username: "your_sql_login"
+  # password: "your_password"
+  driver: "{ODBC Driver 17 for SQL Server}"
+  connect_timeout: 10                   # seconds
+  query_timeout: 30                     # seconds per diagnostic query
+
+# AI Analysis Engine
+ai:
+  # provider: "openai"                  # Options: "openai", "azure", "github", "rules"
+  provider: "rules"                     # "rules" = no API needed, rule-based analysis
+  # --- GitHub Models (use with GitHub PAT) ---
+  # provider: "github"
+  # API key resolution (in priority order):
+  #   1. GITHUB_TOKEN environment variable
+  #   2. GitHub CLI: `gh auth token` (if gh is installed and authenticated)
+  #   3. api_key below (last resort — avoid committing tokens)
+  # api_key: "ghp_..."                  # GitHub Personal Access Token
+  # model: "gpt-4o"
+  # --- OpenAI ---
+  # api_key: "sk-..."
+  # model: "gpt-4o"
+  # --- Azure OpenAI ---
+  # api_key: "your-azure-key"
+  # api_base: "https://your-instance.openai.azure.com/"
+  # model: "your-deployment-name"
+  # api_version: "2024-06-01"
+
+# Background Monitor
+monitor:
+  check_interval: 60                    # seconds between automated checks
+  cooldown: 300                         # seconds before re-alerting same issue
+
+# Alerts
+alerts:
+  report_dir: "reports"                 # where reports are saved
+
+  # Email (optional)
+  email:
+    enabled: false
+    smtp_server: "smtp.corp.local"
+    smtp_port: 587
+    use_tls: true
+    smtp_user: ""
+    smtp_password: ""
+    from_addr: "dba-ai@corp.local"
+    to_addrs:
+      - "dba-team@corp.local"
+
+  # Webhook — Teams / Slack / PagerDuty (optional)
+  # webhook_url: "https://hooks.slack.com/services/..."
+
+# Web Dashboard
+web:
+  host: "127.0.0.1"
+  port: 5555
+  secret_key: "change-this-to-a-random-string"
