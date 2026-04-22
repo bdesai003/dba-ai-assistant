@@ -4,5 +4,5 @@ PyYAML>=6.0
 flask>=3.0
 
 # AI analysis (optional — only needed if ai.provider != "rules")
-# openai>=1.0
-# cryptography>=42.0    # needed for VS Code Copilot token auto-detection on Windows
+openai>=1.0
+cryptography>=42.0    # needed for VS Code Copilot token auto-detection on Windows

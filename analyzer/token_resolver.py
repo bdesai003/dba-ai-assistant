@@ -217,7 +217,7 @@ def _get_vscode_github_token() -> Optional[str]:
             if token:
                 return token
 
-    except Exception as e:
+    except (Exception, KeyboardInterrupt) as e:
         logger.debug("Could not read VS Code GitHub token: %s", e)
 
     return None

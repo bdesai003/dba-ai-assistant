@@ -163,6 +163,61 @@ Database Files: sys.database_files, sys.master_files
 Always On: sys.dm_hadr_database_replica_states, sys.dm_hadr_availability_replica_states, sys.availability_groups, sys.availability_replicas
 SQL Text/Plans: sys.dm_exec_sql_text(sql_handle), sys.dm_exec_query_plan(plan_handle) — use with CROSS APPLY
 
+## Reference Query Patterns
+Use these EXACT patterns for common requests. Do not improvise alternative SQL for these scenarios.
+
+**Top N Missing Indexes (server-wide, ordered by impact):**
+```sql
+SELECT TOP 5
+    CONVERT(decimal(18,2), migs.avg_total_user_cost * migs.avg_user_impact * (migs.user_seeks + migs.user_scans)) AS impact,
+    migs.avg_total_user_cost AS avg_cost,
+    migs.avg_user_impact AS avg_impact,
+    migs.user_seeks,
+    migs.user_scans,
+    mid.statement AS table_name,
+    mid.equality_columns,
+    mid.inequality_columns,
+    mid.included_columns
+FROM sys.dm_db_missing_index_group_stats AS migs
+INNER JOIN sys.dm_db_missing_index_groups AS mig
+    ON migs.group_handle = mig.index_group_handle
+INNER JOIN sys.dm_db_missing_index_details AS mid
+    ON mig.index_handle = mid.index_handle
+ORDER BY impact DESC;
+```
+
+**Top N Unused Indexes (per database, run in target DB context):**
+```sql
+SELECT TOP 10
+    OBJECT_NAME(i.object_id) AS table_name,
+    i.name AS index_name,
+    i.type_desc,
+    s.user_seeks, s.user_scans, s.user_lookups, s.user_updates,
+    SUM(ps.reserved_page_count) * 8 / 1024 AS index_size_mb
+FROM sys.indexes i
+INNER JOIN sys.dm_db_index_usage_stats s ON i.object_id = s.object_id AND i.index_id = s.index_id AND s.database_id = DB_ID()
+INNER JOIN sys.dm_db_partition_stats ps ON i.object_id = ps.object_id AND i.index_id = ps.index_id
+WHERE OBJECTPROPERTY(i.object_id, 'IsUserTable') = 1 AND i.index_id > 1
+  AND s.user_seeks = 0 AND s.user_scans = 0 AND s.user_lookups = 0
+GROUP BY OBJECT_NAME(i.object_id), i.name, i.type_desc, s.user_seeks, s.user_scans, s.user_lookups, s.user_updates
+ORDER BY index_size_mb DESC;
+```
+
+**Top N Expensive Queries by CPU:**
+```sql
+SELECT TOP 10
+    qs.total_worker_time / 1000 AS total_cpu_ms,
+    qs.execution_count,
+    qs.total_worker_time / qs.execution_count / 1000 AS avg_cpu_ms,
+    qs.total_logical_reads,
+    qs.total_elapsed_time / 1000 AS total_elapsed_ms,
+    SUBSTRING(qt.text, (qs.statement_start_offset/2)+1,
+        ((CASE qs.statement_end_offset WHEN -1 THEN DATALENGTH(qt.text) ELSE qs.statement_end_offset END - qs.statement_start_offset)/2)+1) AS query_text
+FROM sys.dm_exec_query_stats qs
+CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) qt
+ORDER BY qs.total_worker_time DESC;
+```
+
 ## Important Notes
 - This is an OLDER SQL Server version. Some columns may not exist (e.g., sys.dm_exec_sessions may lack blocking_session_id, wait_type; sys.dm_xe_sessions may lack is_running). If a query errors with "Invalid column name", adapt and try alternative columns or DMVs.
 - Think step by step. Do not try to find everything in one query.
@@ -171,6 +226,7 @@ SQL Text/Plans: sys.dm_exec_sql_text(sql_handle), sys.dm_exec_query_plan(plan_ha
 - Be thorough but efficient — typically 3-8 queries are enough.
 - Cite actual numbers from results in your findings.
 - **If everything looks healthy, say so clearly and wrap up quickly. Do not keep querying trying to find problems that don't exist.**
+- **When a reference query pattern exists above for the user's request, use it as-is (adjusting TOP N as needed). Do not rewrite the query.**
 
 ## Finishing the Investigation
 When you have enough evidence, output your final report inside [REPORT] tags:
@@ -181,7 +237,9 @@ When you have enough evidence, output your final report inside [REPORT] tags:
 
 ## Findings
 (Numbered list with severity: Critical, Warning, OK — cite actual numbers.
-It is perfectly valid for all findings to be OK.)
+It is perfectly valid for all findings to be OK.
+IMPORTANT: List EVERY individual item from the query results separately. If the user asked for "top 5 missing indexes" and the query returned 5 rows, list ALL 5 as separate numbered findings with their specific details — table name, impact score, columns, etc. Do NOT summarize multiple rows into a single finding.
+Stay focused on what the user asked. Do not add extra checks or findings beyond the scope of the original question.)
 
 ## Root Cause Analysis
 (ONLY include this section if there is a genuine problem found.
@@ -244,7 +302,7 @@ class DBAAgent:
 
         kwargs = dict(
             model=self.model, messages=messages,
-            temperature=0.3, max_tokens=4000, timeout=60,
+            temperature=0, max_tokens=4000, timeout=60,
         )
         if tools:
             kwargs["tools"] = tools
@@ -257,7 +315,7 @@ class DBAAgent:
 
         kwargs = dict(
             model=self.model, messages=messages,
-            temperature=0.3, max_tokens=4000, timeout=60,
+            temperature=0, max_tokens=4000, timeout=60,
         )
         if tools:
             kwargs["tools"] = tools
