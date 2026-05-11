@@ -135,7 +135,10 @@ class AIAnalyzer:
             logger.error("openai package not installed. pip install openai")
             return self._analyze_rules(diagnostic_results, context, profile_name)
 
-        client = OpenAI(api_key=self.api_key)
+        kwargs = {"api_key": self.api_key}
+        if self.api_base:
+            kwargs["base_url"] = self.api_base
+        client = OpenAI(**kwargs)
         user_prompt = self._build_user_prompt(diagnostic_results, context, profile_name)
 
         response = client.chat.completions.create(
@@ -193,12 +196,12 @@ class AIAnalyzer:
             {"role": "user", "content": user_prompt},
         ]
 
-        # Strategy 1: Try models.inference.ai.github.com with raw token
+        # Strategy 1: Try models.inference.ai.azure.com with raw token
         try:
-            logger.info("Trying GitHub Models at https://models.inference.ai.github.com...")
+            logger.info("Trying GitHub Models at https://models.inference.ai.azure.com...")
             client = OpenAI(
                 api_key=self.api_key,
-                base_url="https://models.inference.ai.github.com",
+                base_url="https://models.inference.ai.azure.com",
             )
             response = client.chat.completions.create(
                 model=self.model, messages=messages,

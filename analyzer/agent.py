@@ -183,8 +183,11 @@ INNER JOIN sys.dm_db_missing_index_groups AS mig
     ON migs.group_handle = mig.index_group_handle
 INNER JOIN sys.dm_db_missing_index_details AS mid
     ON mig.index_handle = mid.index_handle
+WHERE mid.database_id = DB_ID('<target_database>')
 ORDER BY impact DESC;
 ```
+
+IMPORTANT: When the user specifies a database name (e.g., "missing indexes on VDS"), replace `<target_database>` with that database name in the WHERE clause. If no database is specified, use DB_ID() to scope to the current database context. Never return missing indexes across all databases when the user has mentioned a specific database.
 
 **Top N Unused Indexes (per database, run in target DB context):**
 ```sql
@@ -259,12 +262,13 @@ For each recommendation: what to do, why it helps, risk level)
 class DBAAgent:
     """Agentic DBA investigator that iteratively diagnoses SQL Server issues."""
 
-    def __init__(self, connector, provider: str = "github",
+    def __init__(self, connector, provider: str = "openai",
                  api_key: Optional[str] = None,
                  api_base: Optional[str] = None,
                  model: str = "gpt-4o",
                  api_version: str = "2024-06-01",
-                 max_iterations: int = 15):
+                 max_iterations: int = 15,
+                 extra_headers: Optional[dict] = None):
         self.connector = connector
         self.provider = provider
         self.api_key = api_key
@@ -272,6 +276,7 @@ class DBAAgent:
         self.model = model
         self.api_version = api_version
         self.max_iterations = max_iterations
+        self.extra_headers = extra_headers
 
     def _get_client(self, base_url: str = None, api_key: str = None,
                     extra_headers: dict = None):
@@ -282,7 +287,7 @@ class DBAAgent:
         if self.provider == "github":
             return OpenAI(
                 api_key=key,
-                base_url=base_url or "https://models.inference.ai.github.com",
+                base_url=base_url or "https://models.inference.ai.azure.com",
                 default_headers=extra_headers or {},
             )
         elif self.provider == "azure":
@@ -291,8 +296,15 @@ class DBAAgent:
                 api_version=self.api_version,
                 azure_endpoint=self.api_base,
             )
-        else:  # openai
-            return OpenAI(api_key=key)
+        else:  # openai (or compatible endpoint)
+            kwargs = {"api_key": key}
+            if self.api_base:
+                kwargs["base_url"] = self.api_base
+            if self.extra_headers or extra_headers:
+                headers = extra_headers or self.extra_headers
+                # Filter out None values to avoid header errors
+                kwargs["default_headers"] = {k: v for k, v in headers.items() if v is not None}
+            return OpenAI(**kwargs)
 
     def _call_ai(self, client, messages: List[Dict], tools=None):
         """Call the AI model and return the raw message object.
@@ -320,10 +332,10 @@ class DBAAgent:
         if tools:
             kwargs["tools"] = tools
 
-        # Strategy 1: Try models.inference.ai.github.com with raw token
+        # Strategy 1: Try models.inference.ai.azure.com with raw token
         try:
-            logger.info("Trying models.inference.ai.github.com...")
-            c = self._get_client(base_url="https://models.inference.ai.github.com")
+            logger.info("Trying models.inference.ai.azure.com...")
+            c = self._get_client(base_url="https://models.inference.ai.azure.com")
             response = c.chat.completions.create(**kwargs)
             return response.choices[0].message
         except Exception as e:

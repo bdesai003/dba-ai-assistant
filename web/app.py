@@ -112,7 +112,13 @@ def register_routes(app: Flask):
         report_dir.mkdir(exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         report_path = report_dir / f"diag_{profile_name}_{timestamp}.md"
-        report_path.write_text(analysis, encoding="utf-8")
+        ai_cfg = _config.get("ai", {})
+        header = (
+            f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  "
+            f"**Provider:** {ai_cfg.get('provider', 'rules')} | "
+            f"**Model:** {ai_cfg.get('model', 'N/A')}\n\n---\n\n"
+        )
+        report_path.write_text(header + analysis, encoding="utf-8")
 
         return jsonify({
             "profile": profile_name,
@@ -169,6 +175,7 @@ def register_routes(app: Flask):
             api_base=ai.get("api_base"),
             model=ai.get("model", "gpt-4o"),
             api_version=ai.get("api_version", "2024-06-01"),
+            extra_headers=ai.get("extra_headers"),
         )
 
         steps = []
@@ -182,7 +189,12 @@ def register_routes(app: Flask):
         report_dir.mkdir(exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         report_path = report_dir / f"investigation_{timestamp}.md"
-        report_path.write_text(report, encoding="utf-8")
+        header = (
+            f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  "
+            f"**Provider:** {agent.provider} | "
+            f"**Model:** {agent.model}\n\n---\n\n"
+        )
+        report_path.write_text(header + report, encoding="utf-8")
 
         return jsonify({
             "report": report,

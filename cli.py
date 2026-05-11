@@ -121,7 +121,13 @@ def cmd_diagnose(args, config):
     report_dir.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     report_path = report_dir / f"diag_{profile_name}_{timestamp}.md"
-    report_path.write_text(report, encoding="utf-8")
+    ai_cfg = config.get("ai", {})
+    header = (
+        f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  "
+        f"**Provider:** {ai_cfg.get('provider', 'rules')} | "
+        f"**Model:** {ai_cfg.get('model', 'N/A')}\n\n---\n\n"
+    )
+    report_path.write_text(header + report, encoding="utf-8")
     print(f"\n📄 Report saved: {report_path}")
 
 
@@ -238,6 +244,7 @@ def cmd_investigate(args, config):
         model=ai.get("model", "gpt-4o"),
         api_version=ai.get("api_version", "2024-06-01"),
         max_iterations=args.max_steps,
+        extra_headers=ai.get("extra_headers"),
     )
 
     problem = args.problem
@@ -264,7 +271,12 @@ def cmd_investigate(args, config):
     report_dir.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     report_path = report_dir / f"investigation_{timestamp}.md"
-    report_path.write_text(report, encoding="utf-8")
+    header = (
+        f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  "
+        f"**Provider:** {agent.provider} | "
+        f"**Model:** {agent.model}\n\n---\n\n"
+    )
+    report_path.write_text(header + report, encoding="utf-8")
     print(f"\n📄 Report saved: {report_path}")
 
 

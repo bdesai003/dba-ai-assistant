@@ -146,12 +146,54 @@ def is_copilot_token_source() -> bool:
 
 def _get_vscode_github_token() -> Optional[str]:
     """
-    Read the GitHub OAuth token from VS Code's encrypted local storage.
-    Uses DPAPI (Windows) to decrypt Electron's safeStorage.
+    Read the GitHub OAuth token from Windows Credential Manager
+    (stored by git credential helper or VS Code GitHub sign-in).
+    Falls back to VS Code's DPAPI-encrypted safeStorage on failure.
     """
     if os.name != "nt":
-        return None  # Only Windows supported for now
+        return None  # Only Windows supported
 
+    # --- Source 1: Windows Credential Manager (git:https://github.com) ---
+    try:
+        import ctypes
+        import ctypes.wintypes
+
+        class FILETIME(ctypes.Structure):
+            _fields_ = [("dwLowDateTime", ctypes.wintypes.DWORD),
+                        ("dwHighDateTime", ctypes.wintypes.DWORD)]
+
+        class CREDENTIAL(ctypes.Structure):
+            _fields_ = [
+                ("Flags", ctypes.wintypes.DWORD),
+                ("Type", ctypes.wintypes.DWORD),
+                ("TargetName", ctypes.wintypes.LPWSTR),
+                ("Comment", ctypes.wintypes.LPWSTR),
+                ("LastWritten", FILETIME),
+                ("CredentialBlobSize", ctypes.wintypes.DWORD),
+                ("CredentialBlob", ctypes.POINTER(ctypes.c_ubyte)),
+                ("Persist", ctypes.wintypes.DWORD),
+                ("AttributeCount", ctypes.wintypes.DWORD),
+                ("Attributes", ctypes.c_void_p),
+                ("TargetAlias", ctypes.wintypes.LPWSTR),
+                ("UserName", ctypes.wintypes.LPWSTR),
+            ]
+
+        advapi32 = ctypes.windll.advapi32
+        cred_ptr = ctypes.POINTER(CREDENTIAL)()
+        if advapi32.CredReadW("git:https://github.com", 1, 0, ctypes.byref(cred_ptr)):
+            cred = cred_ptr.contents
+            if cred.CredentialBlobSize > 0:
+                blob = bytes(cred.CredentialBlob[:cred.CredentialBlobSize])
+                token = blob.decode("utf-16-le").rstrip("\x00")
+                advapi32.CredFree(cred_ptr)
+                if token.startswith(("gho_", "ghp_", "github_pat_")):
+                    logger.info("Using GitHub token from Windows Credential Manager")
+                    return token
+            advapi32.CredFree(cred_ptr)
+    except Exception as e:
+        logger.debug("Windows Credential Manager read failed: %s", e)
+
+    # --- Source 2: VS Code DPAPI-encrypted safeStorage (legacy fallback) ---
     try:
         import base64
         import ctypes
@@ -171,7 +213,6 @@ def _get_vscode_github_token() -> Optional[str]:
         if not os.path.exists(local_state_path) or not os.path.exists(db_path):
             return None
 
-        # Get the AES key from Local State (DPAPI-encrypted)
         with open(local_state_path, "r", encoding="utf-8") as f:
             local_state = json.load(f)
         encrypted_key = base64.b64decode(
@@ -190,11 +231,11 @@ def _get_vscode_github_token() -> Optional[str]:
         aes_key = ctypes.string_at(blob_out.pbData, blob_out.cbData)
         ctypes.windll.kernel32.LocalFree(blob_out.pbData)
 
-        # Read encrypted token from VS Code state DB
+        # Look for GitHub session secret stored by vscode.github-authentication extension
         db = sqlite3.connect(db_path)
         row = db.execute(
             "SELECT value FROM ItemTable WHERE key LIKE ?",
-            ("%github.auth%",),
+            ('%secret%github-authentication%',),
         ).fetchone()
         db.close()
 
@@ -203,7 +244,6 @@ def _get_vscode_github_token() -> Optional[str]:
 
         raw = bytes(json.loads(row[0])["data"])
 
-        # Decrypt: strip v10 prefix (3 bytes), then AES-256-GCM
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
         decrypted = AESGCM(aes_key).decrypt(
             raw[3:15],    # 12-byte nonce
