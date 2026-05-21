@@ -73,6 +73,7 @@ class AIAnalyzer:
         self.api_base = api_base
         self.model = model
         self.api_version = api_version
+        self.last_api_endpoint = "rule-based"
 
         if provider in ("openai", "azure", "github") and not api_key:
             logger.warning("No API key configured — falling back to rule-based analysis")
@@ -88,6 +89,8 @@ class AIAnalyzer:
             context: Additional context from the DBA (e.g., "users report slowness")
             profile_name: Name of the diagnostic profile used
         """
+        self.last_api_endpoint = None
+
         if self.provider == "openai":
             return self._analyze_openai(diagnostic_results, context, profile_name)
         elif self.provider == "azure":
@@ -150,6 +153,7 @@ class AIAnalyzer:
             temperature=0.3,
             max_tokens=4000,
         )
+        self.last_api_endpoint = self.api_base or "openai"
         return response.choices[0].message.content
 
     def _analyze_azure(self, diagnostic_results: dict, context: str,
@@ -177,6 +181,7 @@ class AIAnalyzer:
             temperature=0.3,
             max_tokens=4000,
         )
+        self.last_api_endpoint = self.api_base or "azure"
         return response.choices[0].message.content
 
     def _analyze_github(self, diagnostic_results: dict, context: str,
@@ -208,6 +213,7 @@ class AIAnalyzer:
                 temperature=0.3, max_tokens=4000, timeout=30,
             )
             logger.info("AI analysis completed via GitHub Models")
+            self.last_api_endpoint = "https://models.inference.ai.azure.com"
             return response.choices[0].message.content
         except Exception as e:
             logger.warning(f"GitHub Models failed: {e}")
@@ -226,6 +232,7 @@ class AIAnalyzer:
                 temperature=0.3, max_tokens=4000, timeout=30,
             )
             logger.info("AI analysis completed via GitHub Copilot API")
+            self.last_api_endpoint = "https://api.githubcopilot.com"
             return response.choices[0].message.content
         except Exception as e:
             logger.warning(f"GitHub Copilot API failed: {e}")
@@ -240,6 +247,7 @@ class AIAnalyzer:
     def _analyze_rules(self, diagnostic_results: dict, context: str,
                        profile_name: str) -> str:
         """Rule-based analysis when no AI API is available."""
+        self.last_api_endpoint = "rule-based"
         report = ["# DBA Diagnostic Report (Rule-Based Analysis)\n"]
         if context:
             report.append(f"**Context:** {context}\n")

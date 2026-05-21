@@ -122,10 +122,12 @@ def cmd_diagnose(args, config):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     report_path = report_dir / f"diag_{profile_name}_{timestamp}.md"
     ai_cfg = config.get("ai", {})
+    api_endpoint = analyzer.last_api_endpoint or ai_cfg.get("provider", "rules")
     header = (
         f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  "
         f"**Provider:** {ai_cfg.get('provider', 'rules')} | "
-        f"**Model:** {ai_cfg.get('model', 'N/A')}\n\n---\n\n"
+        f"**Model:** {ai_cfg.get('model', 'N/A')} | "
+        f"**API Endpoint:** {api_endpoint}\n\n---\n\n"
     )
     report_path.write_text(header + report, encoding="utf-8")
     print(f"\n📄 Report saved: {report_path}")
@@ -271,10 +273,12 @@ def cmd_investigate(args, config):
     report_dir.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     report_path = report_dir / f"investigation_{timestamp}.md"
+    api_endpoint = agent.last_api_endpoint or agent.provider
     header = (
         f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  "
         f"**Provider:** {agent.provider} | "
-        f"**Model:** {agent.model}\n\n---\n\n"
+        f"**Model:** {agent.model} | "
+        f"**API Endpoint:** {api_endpoint}\n\n---\n\n"
     )
     report_path.write_text(header + report, encoding="utf-8")
     print(f"\n📄 Report saved: {report_path}")

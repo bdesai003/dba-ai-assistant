@@ -267,7 +267,7 @@ class DBAAgent:
                  api_base: Optional[str] = None,
                  model: str = "gpt-4o",
                  api_version: str = "2024-06-01",
-                 max_iterations: int = 15,
+                 max_iterations: int = 8,
                  extra_headers: Optional[dict] = None):
         self.connector = connector
         self.provider = provider
@@ -277,6 +277,7 @@ class DBAAgent:
         self.api_version = api_version
         self.max_iterations = max_iterations
         self.extra_headers = extra_headers
+        self.last_api_endpoint = "rule-based"
 
     def _get_client(self, base_url: str = None, api_key: str = None,
                     extra_headers: dict = None):
@@ -319,6 +320,10 @@ class DBAAgent:
         if tools:
             kwargs["tools"] = tools
         response = client.chat.completions.create(**kwargs)
+        if self.provider == "azure":
+            self.last_api_endpoint = self.api_base or "azure"
+        else:
+            self.last_api_endpoint = self.api_base or "openai"
         return response.choices[0].message
 
     def _call_github_ai(self, messages: List[Dict], tools=None):
@@ -337,6 +342,7 @@ class DBAAgent:
             logger.info("Trying models.inference.ai.azure.com...")
             c = self._get_client(base_url="https://models.inference.ai.azure.com")
             response = c.chat.completions.create(**kwargs)
+            self.last_api_endpoint = "https://models.inference.ai.azure.com"
             return response.choices[0].message
         except Exception as e:
             logger.warning(f"GitHub Models failed: {e}")
@@ -352,6 +358,7 @@ class DBAAgent:
             )
             try:
                 response = c.chat.completions.create(**kwargs)
+                self.last_api_endpoint = "https://api.githubcopilot.com"
                 return response.choices[0].message
             except Exception as e:
                 # If tools not supported, retry without tools
@@ -359,6 +366,7 @@ class DBAAgent:
                     logger.warning(f"Tools not supported, retrying without: {e}")
                     kwargs.pop("tools", None)
                     response = c.chat.completions.create(**kwargs)
+                    self.last_api_endpoint = "https://api.githubcopilot.com"
                     return response.choices[0].message
                 raise
         except Exception as e:
