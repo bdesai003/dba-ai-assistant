@@ -65,6 +65,7 @@ def build_analyzer(config: dict) -> AIAnalyzer:
         api_base=ai.get("api_base"),
         model=ai.get("model", "gpt-4o"),
         api_version=ai.get("api_version", "2024-06-01"),
+        extra_headers=ai.get("extra_headers"),
     )
 
 

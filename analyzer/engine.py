@@ -67,12 +67,14 @@ class AIAnalyzer:
                  api_key: Optional[str] = None,
                  api_base: Optional[str] = None,
                  model: str = "gpt-4o",
-                 api_version: str = "2024-06-01"):
+                 api_version: str = "2024-06-01",
+                 extra_headers: Optional[dict] = None):
         self.provider = provider
         self.api_key = api_key
         self.api_base = api_base
         self.model = model
         self.api_version = api_version
+        self.extra_headers = extra_headers
         self.last_api_endpoint = "rule-based"
 
         if provider in ("openai", "azure", "github") and not api_key:
@@ -141,6 +143,10 @@ class AIAnalyzer:
         kwargs = {"api_key": self.api_key}
         if self.api_base:
             kwargs["base_url"] = self.api_base
+        if self.extra_headers:
+            kwargs["default_headers"] = {
+                k: v for k, v in self.extra_headers.items() if v is not None
+            }
         client = OpenAI(**kwargs)
         user_prompt = self._build_user_prompt(diagnostic_results, context, profile_name)
 

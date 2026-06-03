@@ -54,6 +54,7 @@ def create_app(config: dict) -> Flask:
         api_key=api_key,
         api_base=ai.get("api_base"),
         model=ai.get("model", "gpt-4o"),
+        extra_headers=ai.get("extra_headers"),
     )
 
     alert_cfg = config.get("alerts", {})
