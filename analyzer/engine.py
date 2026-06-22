@@ -63,6 +63,9 @@ RULES:
 class AIAnalyzer:
     """Analyzes diagnostic results using AI or rule-based fallback."""
 
+    MAX_ROWS_PER_QUERY = 10
+    MAX_RESULT_CHARS = 12000
+
     def __init__(self, provider: str = "openai",
                  api_key: Optional[str] = None,
                  api_base: Optional[str] = None,
@@ -123,10 +126,29 @@ class AIAnalyzer:
                 continue
 
             prompt_parts.append(f"Rows: {result['row_count']}")
-            # Truncate large result sets to keep prompt manageable
-            rows_to_show = result["rows"][:25]
+            # Keep the prompt compact enough for model context limits.
+            rows_to_show = []
+            for row in result["rows"][:self.MAX_ROWS_PER_QUERY]:
+                compact_row = {}
+                for key, value in row.items():
+                    if key == "query_plan":
+                        continue
+                    if (
+                        key in ("sql_text", "full_sql_text", "current_statement", "blocker_sql", "blocked_sql")
+                        and isinstance(value, str)
+                        and len(value) > 1500
+                    ):
+                        compact_row[key] = value[:1500] + "... (truncated)"
+                    else:
+                        compact_row[key] = value
+                rows_to_show.append(compact_row)
+
+            data_json = json.dumps(rows_to_show, separators=(",", ":"), default=str)
+            if len(data_json) > self.MAX_RESULT_CHARS:
+                data_json = data_json[:self.MAX_RESULT_CHARS] + "... (truncated)"
+
             prompt_parts.append("```json")
-            prompt_parts.append(json.dumps(rows_to_show, indent=2, default=str))
+            prompt_parts.append(data_json)
             prompt_parts.append("```\n")
 
         return "\n".join(prompt_parts)
@@ -157,7 +179,7 @@ class AIAnalyzer:
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.3,
-            max_tokens=4000,
+            max_tokens=1500,
         )
         self.last_api_endpoint = self.api_base or "openai"
         return response.choices[0].message.content

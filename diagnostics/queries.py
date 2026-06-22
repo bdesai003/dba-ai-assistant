@@ -151,7 +151,7 @@ SELECT
     r.reads,
     r.writes,
     r.logical_reads,
-    qp.query_plan,
+    -- qp.query_plan,
     s.login_name,
     s.host_name,
     s.program_name,
@@ -159,7 +159,7 @@ SELECT
 FROM sys.dm_exec_requests r
 JOIN sys.dm_exec_sessions s ON r.session_id = s.session_id
 CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) t
-OUTER APPLY sys.dm_exec_query_plan(r.plan_handle) qp
+-- OUTER APPLY sys.dm_exec_query_plan(r.plan_handle) qp
 WHERE r.session_id > 50
   AND r.status <> 'background'
   AND DATEDIFF(SECOND, r.start_time, GETDATE()) > 5
