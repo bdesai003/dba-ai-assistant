@@ -267,7 +267,7 @@ class DBAAgent:
                  api_base: Optional[str] = None,
                  model: str = "gpt-4o",
                  api_version: str = "2024-06-01",
-                 max_iterations: int = 8,
+                 max_iterations: int = 10,
                  extra_headers: Optional[dict] = None):
         self.connector = connector
         self.provider = provider
