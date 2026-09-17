@@ -14,6 +14,7 @@ from diagnostics.connector import SQLServerConnector
 from diagnostics.queries import DIAGNOSTIC_PROFILES
 from analyzer.engine import AIAnalyzer
 from analyzer.token_resolver import resolve_api_key
+from analyzer.session_store import ChatSessionStore
 from monitor.service import MonitorService, AlertManager
 
 logger = logging.getLogger("dba-ai-assistant")
@@ -23,12 +24,14 @@ _connector = None
 _analyzer = None
 _monitor = None
 _config = None
+_chat_sessions = None
 
 
 def create_app(config: dict) -> Flask:
     """Create and configure the Flask application."""
-    global _connector, _analyzer, _monitor, _config
+    global _connector, _analyzer, _monitor, _config, _chat_sessions
     _config = config
+    _chat_sessions = ChatSessionStore()
 
     app = Flask(__name__, template_folder="../templates")
     app.secret_key = config.get("web", {}).get("secret_key", "change-me-in-production")
@@ -186,7 +189,19 @@ def register_routes(app: Flask):
         def on_progress(msg, data=None):
             steps.append(msg)
 
-        report = agent.investigate(problem, on_progress=on_progress)
+        result = agent.start_session(problem, on_progress=on_progress)
+        report = agent.format_investigation_result(problem, result)
+
+        # Persist conversation state so follow-up chat questions can resume it
+        session_id = _chat_sessions.create(problem, agent.provider, agent.model)
+        _chat_sessions.update(
+            session_id,
+            messages=result["messages"],
+            investigation_log=result["investigation_log"],
+            use_tools=result["use_tools"],
+        )
+        _chat_sessions.append_history(session_id, "user", problem)
+        _chat_sessions.append_history(session_id, "assistant", report)
 
         # Save report
         report_dir = Path(_config.get("alerts", {}).get("report_dir", "reports"))
@@ -208,4 +223,82 @@ def register_routes(app: Flask):
             "api_endpoint": api_endpoint,
             "timestamp": datetime.now().isoformat(),
             "report_file": str(report_path),
+            "session_id": session_id,
         })
+
+    @app.route("/api/chat", methods=["POST"])
+    def api_chat():
+        """Continue an investigation session with a follow-up chat question
+        (tuning ideas, execution plan analysis, etc.)."""
+        from analyzer.agent import DBAAgent
+
+        data = request.get_json() or {}
+        session_id = data.get("session_id", "").strip()
+        message = data.get("message", "").strip()
+        if not session_id:
+            return jsonify({"error": "No session_id provided"}), 400
+        if not message:
+            return jsonify({"error": "No message provided"}), 400
+
+        session = _chat_sessions.get(session_id)
+        if not session:
+            return jsonify({"error": "Session not found or expired"}), 404
+
+        ai = _config.get("ai", {})
+        api_key = resolve_api_key(ai.get("api_key"))
+        agent = DBAAgent(
+            connector=_connector,
+            provider=session.get("provider", ai.get("provider", "rules")),
+            api_key=api_key,
+            api_base=ai.get("api_base"),
+            model=session.get("model", ai.get("model", "gpt-4o")),
+            api_version=ai.get("api_version", "2024-06-01"),
+            extra_headers=ai.get("extra_headers"),
+        )
+
+        steps = []
+        def on_progress(msg, data=None):
+            steps.append(msg)
+
+        result = agent.continue_session(
+            session["messages"], session["investigation_log"], message,
+            on_progress=on_progress, use_tools=session.get("use_tools", True),
+        )
+        answer = agent.format_chat_answer(message, result)
+
+        _chat_sessions.update(
+            session_id,
+            messages=result["messages"],
+            investigation_log=result["investigation_log"],
+            use_tools=result["use_tools"],
+        )
+        _chat_sessions.append_history(session_id, "user", message)
+        _chat_sessions.append_history(session_id, "assistant", answer)
+
+        return jsonify({
+            "answer": answer,
+            "steps": steps,
+            "done": result["done"],
+            "session_id": session_id,
+            "timestamp": datetime.now().isoformat(),
+        })
+
+    @app.route("/api/chat/<session_id>", methods=["GET"])
+    def api_chat_history(session_id: str):
+        """Return the display transcript for a chat session (for reloading the UI)."""
+        session = _chat_sessions.get(session_id)
+        if not session:
+            return jsonify({"error": "Session not found or expired"}), 404
+        return jsonify({
+            "session_id": session_id,
+            "problem": session["problem"],
+            "history": session["history"],
+            "created_at": datetime.fromtimestamp(session["created_at"]).isoformat(),
+            "last_active": datetime.fromtimestamp(session["last_active"]).isoformat(),
+        })
+
+    @app.route("/api/chat/<session_id>", methods=["DELETE"])
+    def api_chat_delete(session_id: str):
+        """Discard a chat session's conversation memory."""
+        _chat_sessions.delete(session_id)
+        return jsonify({"deleted": session_id})

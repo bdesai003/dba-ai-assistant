@@ -256,6 +256,16 @@ For each recommendation: what to do, why it helps, risk level)
 ## Monitoring Follow-up
 (Brief — 1-2 lines max. What to watch going forward.)
 [/REPORT]
+
+## Follow-Up Chat Questions
+After you deliver a [REPORT], the user may keep chatting with follow-up
+questions (tuning ideas, "explain that execution plan", "why is this query
+slow", etc.). For these follow-ups:
+- Answer directly in plain text — do NOT wrap answers in [REPORT] tags again.
+- Run more [SQL]...[/SQL] queries first if you need fresh evidence (e.g.
+  fetch a plan via sys.dm_exec_query_plan/sys.dm_exec_sql_text, re-check
+  current stats) before answering.
+- Stay focused on what was actually asked.
 """
 
 
@@ -267,7 +277,7 @@ class DBAAgent:
                  api_base: Optional[str] = None,
                  model: str = "gpt-4o",
                  api_version: str = "2024-06-01",
-                 max_iterations: int = 10,
+                 max_iterations: int = 5,
                  extra_headers: Optional[dict] = None):
         self.connector = connector
         self.provider = provider
@@ -555,25 +565,10 @@ class DBAAgent:
             return "\n\n**Version-Specific DMV Notes (auto-detected):**\n" + "\n".join(notes)
         return ""
 
-    def investigate(self, problem: str,
-                    on_progress: Optional[Callable] = None) -> str:
-        """
-        Investigate a database problem using iterative AI-driven analysis.
-
-        Args:
-            problem: Natural language problem description
-            on_progress: Callback(message, optional_data) for progress updates
-
-        Returns:
-            Final investigation report (markdown)
-        """
-        def progress(msg, data=None):
-            if on_progress:
-                on_progress(msg, data)
-            logger.info(msg)
-
+    def _check_prerequisites(self) -> Optional[str]:
+        """Return an error message if the agent cannot make AI calls, else None."""
         try:
-            from openai import OpenAI
+            import openai  # noqa: F401
         except ImportError:
             return "Error: openai package not installed. Run: pip install openai"
 
@@ -584,44 +579,36 @@ class DBAAgent:
 
         if not self.api_key:
             return "Error: No API key configured. Set ai.api_key in config.yaml."
+        return None
 
-        progress("Starting investigation: " + problem)
+    def _run_loop(self, messages: List[Dict], investigation_log: list,
+                 progress: Callable, mode: str = "investigate",
+                 use_tools: bool = True) -> Dict:
+        """
+        Core iterative AI loop shared by fresh investigations and follow-up
+        chat turns: call the AI, execute any requested SQL, repeat.
 
-        # Collect server context before starting the AI loop
-        server_context = self._collect_server_context(progress)
-        version_guidance = self._get_version_guidance()
+        mode="investigate": loops until a [REPORT] is produced, forcing one
+            once max_iterations is reached (original investigate() behavior).
+        mode="chat": also accepts a plain-text answer as a finished turn —
+            follow-up questions don't require [SQL]/[REPORT] formatting.
 
-        system_content = AGENT_SYSTEM_PROMPT
-        if version_guidance:
-            system_content += version_guidance
-
-        user_content = (
-            f"## Server Environment\n{server_context}\n\n"
-            f"---\n## Problem to Investigate\n{problem}"
-        )
-
-        messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": user_content},
-        ]
-
+        Returns {report, messages, investigation_log, use_tools, error, done}.
+        """
         client = self._get_client()
-        investigation_log = []
-        use_tools = True  # Try function calling first
 
         for iteration in range(1, self.max_iterations + 1):
             progress(f"\n--- Step {iteration}/{self.max_iterations} ---")
 
-            # Call AI (with tools if supported)
             try:
                 tools = self.AGENT_TOOLS if use_tools else None
                 ai_msg = self._call_ai(client, messages, tools=tools)
             except Exception as e:
                 error_msg = str(e)
                 progress(f"AI API error: {error_msg}")
-                if investigation_log:
-                    return self._build_error_report(problem, investigation_log, error_msg)
-                return f"Error: AI API call failed: {error_msg}"
+                return {"report": None, "messages": messages,
+                        "investigation_log": investigation_log,
+                        "use_tools": use_tools, "error": error_msg, "done": False}
 
             # --- Path A: Function calling (tool_calls present) ---
             if hasattr(ai_msg, 'tool_calls') and ai_msg.tool_calls:
@@ -663,7 +650,7 @@ class DBAAgent:
                 messages = self._trim_messages(messages)
                 continue
 
-            # --- Path B: Text-based (fallback) ---
+            # --- Path B: Text-based (fallback, or providers without tools) ---
             use_tools = False  # Endpoint doesn't support tools, stop trying
             response = ai_msg.content or ""
 
@@ -671,14 +658,22 @@ class DBAAgent:
             report = self._extract_report(response)
             if report:
                 progress("Investigation complete")
-                log_section = self._format_investigation_log(investigation_log)
-                return report + log_section
+                messages.append({"role": "assistant", "content": response})
+                return {"report": report, "messages": messages,
+                        "investigation_log": investigation_log,
+                        "use_tools": use_tools, "error": None, "done": True}
 
             # Extract SQL queries from [SQL] tags
             queries = self._extract_sql(response)
 
             if not queries:
                 messages.append({"role": "assistant", "content": response})
+                if mode == "chat":
+                    # Plain conversational answer — no forced continuation
+                    progress("Agent answered directly")
+                    return {"report": response, "messages": messages,
+                            "investigation_log": investigation_log,
+                            "use_tools": use_tools, "error": None, "done": True}
                 messages.append({"role": "user", "content":
                     "Continue your investigation. Run a diagnostic query using "
                     "[SQL]...[/SQL] tags, or provide your final [REPORT]...[/REPORT]."
@@ -693,7 +688,7 @@ class DBAAgent:
             messages.append({"role": "assistant", "content": response})
 
             query_results = []
-            for i, sql in enumerate(queries):
+            for sql in queries:
                 result_msg = self._execute_and_log(
                     sql, reasoning[:100] if reasoning else "",
                     investigation_log, progress
@@ -703,36 +698,162 @@ class DBAAgent:
             results_text = "\n\n".join(
                 f"**Query {i+1} result:**\n{r}" for i, r in enumerate(query_results)
             )
-            messages.append({
-                "role": "user",
-                "content": (
+            if mode == "investigate":
+                follow_up = (
                     f"Here are the query results:\n\n{results_text}\n\n"
                     f"Analyze these results. Then either run more queries to "
                     f"drill deeper using [SQL]...[/SQL] tags, or if you have "
                     f"enough evidence, provide your final [REPORT]...[/REPORT]."
                 )
-            })
+            else:
+                follow_up = (
+                    f"Here are the query results:\n\n{results_text}\n\n"
+                    f"Analyze these results and answer the question. Run more "
+                    f"[SQL]...[/SQL] queries first if you need more evidence."
+                )
+            messages.append({"role": "user", "content": follow_up})
 
             # Trim conversation if it's getting too large
             messages = self._trim_messages(messages)
 
-        # Max iterations — force final report
-        progress("Max steps reached — generating report from evidence gathered")
-        messages.append({
-            "role": "user",
-            "content": "Maximum investigation steps reached. Provide your final "
-                       "[REPORT]...[/REPORT] now based on all evidence gathered."
-        })
-        try:
-            ai_msg = self._call_ai(client, messages)
-            response = ai_msg.content or ""
-            report = self._extract_report(response)
-            if report:
-                log_section = self._format_investigation_log(investigation_log)
-                return report + log_section
-            return response
-        except Exception as e:
-            return self._build_error_report(problem, investigation_log, str(e))
+        # Max iterations reached for this loop
+        if mode == "investigate":
+            progress("Max steps reached — generating report from evidence gathered")
+            messages.append({
+                "role": "user",
+                "content": "Maximum investigation steps reached. Provide your final "
+                           "[REPORT]...[/REPORT] now based on all evidence gathered."
+            })
+            try:
+                ai_msg = self._call_ai(client, messages)
+                response = ai_msg.content or ""
+                report = self._extract_report(response) or response
+                messages.append({"role": "assistant", "content": response})
+                return {"report": report, "messages": messages,
+                        "investigation_log": investigation_log,
+                        "use_tools": use_tools, "error": None, "done": True}
+            except Exception as e:
+                return {"report": None, "messages": messages,
+                        "investigation_log": investigation_log,
+                        "use_tools": use_tools, "error": str(e), "done": False}
+
+        progress("Max steps reached for this turn")
+        return {"report": None, "messages": messages,
+                "investigation_log": investigation_log,
+                "use_tools": use_tools, "error": None, "done": False}
+
+    def start_session(self, problem: str,
+                      on_progress: Optional[Callable] = None) -> Dict:
+        """
+        Start a new investigation as a resumable chat session.
+
+        Returns {report, messages, investigation_log, use_tools, error, done}
+        so the caller can persist the state and resume it later with
+        continue_session() for follow-up questions.
+        """
+        def progress(msg, data=None):
+            if on_progress:
+                on_progress(msg, data)
+            logger.info(msg)
+
+        prereq_error = self._check_prerequisites()
+        if prereq_error:
+            return {"report": prereq_error, "messages": [], "investigation_log": [],
+                    "use_tools": True, "error": "prereq", "done": True}
+
+        progress("Starting investigation: " + problem)
+
+        # Collect server context before starting the AI loop
+        server_context = self._collect_server_context(progress)
+        version_guidance = self._get_version_guidance()
+
+        system_content = AGENT_SYSTEM_PROMPT
+        if version_guidance:
+            system_content += version_guidance
+
+        user_content = (
+            f"## Server Environment\n{server_context}\n\n"
+            f"---\n## Problem to Investigate\n{problem}"
+        )
+
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_content},
+        ]
+
+        result = self._run_loop(messages, [], progress, mode="investigate")
+        progress("Investigation complete" if result["done"] else "Investigation stopped")
+        return result
+
+    def continue_session(self, messages: List[Dict], investigation_log: list,
+                         user_message: str,
+                         on_progress: Optional[Callable] = None,
+                         use_tools: bool = True) -> Dict:
+        """
+        Continue an existing chat session with a follow-up question (e.g.
+        tuning ideas, execution plan analysis), reusing the prior
+        conversation and investigation evidence already gathered.
+
+        Returns {report, messages, investigation_log, use_tools, error, done}
+        where "report" holds the plain-text answer for this turn.
+        """
+        def progress(msg, data=None):
+            if on_progress:
+                on_progress(msg, data)
+            logger.info(msg)
+
+        prereq_error = self._check_prerequisites()
+        if prereq_error:
+            return {"report": prereq_error, "messages": messages,
+                    "investigation_log": investigation_log,
+                    "use_tools": use_tools, "error": "prereq", "done": True}
+
+        progress("Follow-up: " + user_message[:200])
+        messages = messages + [{"role": "user", "content": user_message}]
+        messages = self._trim_messages(messages)
+
+        return self._run_loop(messages, investigation_log, progress,
+                              mode="chat", use_tools=use_tools)
+
+    def investigate(self, problem: str,
+                    on_progress: Optional[Callable] = None) -> str:
+        """
+        Investigate a database problem using iterative AI-driven analysis.
+        Convenience wrapper around start_session() for one-shot callers
+        (CLI) that only need the final report text.
+
+        Args:
+            problem: Natural language problem description
+            on_progress: Callback(message, optional_data) for progress updates
+
+        Returns:
+            Final investigation report (markdown)
+        """
+        result = self.start_session(problem, on_progress=on_progress)
+        return self.format_investigation_result(problem, result)
+
+    def format_investigation_result(self, problem: str, result: Dict) -> str:
+        """Turn a start_session() result into the final report text, matching
+        investigate()'s original error-handling and log-appendix behavior."""
+        if result["error"] == "prereq":
+            return result["report"]
+        if result["error"] and not result["report"]:
+            if result["investigation_log"]:
+                return self._build_error_report(problem, result["investigation_log"], result["error"])
+            return f"Error: AI API call failed: {result['error']}"
+        log_section = self._format_investigation_log(result["investigation_log"])
+        return (result["report"] or "") + log_section
+
+    def format_chat_answer(self, user_message: str, result: Dict) -> str:
+        """Turn a continue_session() result into the follow-up answer text
+        (no investigation-log appendix — that would repeat prior steps)."""
+        if result["error"] == "prereq":
+            return result["report"]
+        if result["error"] and not result["report"]:
+            if result["investigation_log"]:
+                return self._build_error_report(user_message, result["investigation_log"], result["error"])
+            return f"Error: AI API call failed: {result['error']}"
+        return result["report"] or "(No answer produced. Try rephrasing your question.)"
 
     def _execute_and_log(self, sql: str, reasoning: str,
                          investigation_log: list, progress) -> str:

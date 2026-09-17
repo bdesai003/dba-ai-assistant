@@ -353,6 +353,115 @@
             max-width: 400px;
             margin: 0 auto;
         }
+
+        .session-banner {
+            display: none;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 16px;
+            padding: 10px 12px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-size: 13px;
+        }
+
+        .session-banner .meta {
+            color: var(--muted);
+        }
+
+        .chat-panel {
+            display: none;
+            margin-top: 16px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--bg);
+            overflow: hidden;
+        }
+
+        .chat-thread {
+            max-height: 42vh;
+            overflow-y: auto;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .chat-message {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .chat-message.user {
+            align-items: flex-end;
+        }
+
+        .chat-message.assistant {
+            align-items: flex-start;
+        }
+
+        .chat-role {
+            font-size: 11px;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            color: var(--muted);
+        }
+
+        .chat-bubble {
+            max-width: min(88%, 900px);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 12px 14px;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            font-size: 14px;
+            line-height: 1.55;
+        }
+
+        .chat-message.user .chat-bubble {
+            background: #1c2333;
+            border-color: #3c4a67;
+        }
+
+        .chat-message.assistant .chat-bubble {
+            background: var(--surface);
+        }
+
+        .chat-composer {
+            display: grid;
+            grid-template-columns: 1fr auto auto;
+            gap: 10px;
+            padding: 14px;
+            border-top: 1px solid var(--border);
+            background: #11161d;
+        }
+
+        .chat-composer textarea {
+            width: 100%;
+            min-height: 54px;
+            max-height: 140px;
+            resize: vertical;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: var(--bg);
+            color: var(--text);
+            padding: 10px;
+            font: inherit;
+        }
+
+        .chat-composer textarea:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        @media (max-width: 900px) {
+            .chat-composer {
+                grid-template-columns: 1fr;
+            }
+        }
     </style>
 </head>
 
@@ -430,6 +539,13 @@
                     <div class="spinner" id="spinner"></div>
                     <span id="statusText">Running diagnostics...</span>
                 </div>
+                <div id="sessionBanner" class="session-banner">
+                    <div>
+                        <strong>Investigate Chat Active</strong>
+                        <div class="meta" id="sessionMeta">Ask follow-up tuning questions in this session.</div>
+                    </div>
+                    <button class="btn btn-secondary" id="btnEndSession" onclick="endChatSession()">End Session</button>
+                </div>
                 <div id="querySummary" class="query-summary"></div>
                 <div id="reportContent">
                     <div class="empty-state">
@@ -438,12 +554,24 @@
                             Server.</p>
                     </div>
                 </div>
+                <div id="chatPanel" class="chat-panel">
+                    <div id="chatThread" class="chat-thread"></div>
+                    <div class="chat-composer">
+                        <textarea id="chatInput"
+                            placeholder="Ask a follow-up, for example: What are the top tuning ideas? Which query should I inspect next?"></textarea>
+                        <button class="btn btn-primary" id="btnSendChat" onclick="sendChatMessage()">Send</button>
+                        <button class="btn btn-secondary" onclick="endChatSession()">Clear</button>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
 
     <script>
         let selectedProfile = 'quick_health';
+        let activeSessionId = null;
+        let currentMode = 'profile';
+        let chatHistory = [];
 
         // Auto-select first profile
         document.querySelector('.profile-card')?.classList.add('selected');
@@ -460,6 +588,8 @@
             const statusText = document.getElementById('statusText');
             const spinner = document.getElementById('spinner');
             const context = document.getElementById('context').value;
+
+            clearChatState(false);
 
             btn.disabled = true;
             statusBar.style.display = 'flex';
@@ -583,6 +713,7 @@
 
         async function loadReport(filename) {
             try {
+                clearChatState(false);
                 const resp = await fetch(`/api/reports/${encodeURIComponent(filename)}`);
                 const data = await resp.json();
                 document.getElementById('reportContent').innerHTML =
@@ -606,6 +737,7 @@
             const investigateSection = document.getElementById('investigateSection');
             const btnProfile = document.getElementById('btnModeProfile');
             const btnInv = document.getElementById('btnModeInvestigate');
+            currentMode = mode;
 
             if (mode === 'investigate') {
                 profileSection.style.display = 'none';
@@ -622,6 +754,12 @@
                 btnInv.style.background = 'var(--surface)';
                 btnInv.style.color = 'var(--text)';
             }
+
+            if (mode !== 'investigate') {
+                hideChatPanel();
+            } else if (activeSessionId) {
+                showChatPanel();
+            }
         }
 
         async function runInvestigate() {
@@ -632,6 +770,8 @@
             const problem = document.getElementById('problemInput').value.trim();
 
             if (!problem) { alert('Please describe the problem.'); return; }
+
+            clearChatState(false);
 
             btn.disabled = true;
             statusBar.style.display = 'flex';
@@ -653,6 +793,11 @@
                         `<div class="report" style="color:var(--red)">${escapeHtml(data.error)}</div>`;
                     statusText.textContent = 'Investigation failed';
                 } else {
+                    activeSessionId = data.session_id || null;
+                    chatHistory = [
+                        { role: 'user', content: problem },
+                        { role: 'assistant', content: data.report || 'No report generated.' }
+                    ];
                     let stepsHtml = '';
                     (data.steps || []).forEach((s, i) => {
                         if (s.includes('Executing:')) {
@@ -661,8 +806,9 @@
                     });
                     document.getElementById('querySummary').innerHTML = stepsHtml;
 
-                    document.getElementById('reportContent').innerHTML =
-                        `<div class="report">${escapeHtml(data.report || 'No report generated.')}</div>`;
+                    renderChatThread();
+                    updateSessionBanner();
+                    showChatPanel();
                     statusText.textContent = `Investigation completed at ${new Date().toLocaleTimeString()}`;
                     loadReports();
                 }
@@ -676,6 +822,142 @@
                 btn.disabled = false;
             }
         }
+
+        function renderChatThread() {
+            const reportContent = document.getElementById('reportContent');
+            const chatThread = document.getElementById('chatThread');
+
+            if (!chatHistory.length) {
+                reportContent.innerHTML = `<div class="empty-state"><div class="icon">&#x1F4AC;</div><p>Start an investigation to open a chat session.</p></div>`;
+                chatThread.innerHTML = '';
+                return;
+            }
+
+            reportContent.innerHTML = `<div class="report">${escapeHtml(chatHistory[chatHistory.length - 1].content)}</div>`;
+            chatThread.innerHTML = chatHistory.map(msg => {
+                const role = msg.role === 'user' ? 'user' : 'assistant';
+                const label = role === 'user' ? 'You' : 'DBA AI Assistant';
+                return `
+                    <div class="chat-message ${role}">
+                        <div class="chat-role">${label}</div>
+                        <div class="chat-bubble">${escapeHtml(msg.content || '')}</div>
+                    </div>`;
+            }).join('');
+            chatThread.scrollTop = chatThread.scrollHeight;
+        }
+
+        function showChatPanel() {
+            if (currentMode !== 'investigate') {
+                return;
+            }
+            document.getElementById('chatPanel').style.display = 'block';
+            document.getElementById('sessionBanner').style.display = 'flex';
+        }
+
+        function hideChatPanel() {
+            document.getElementById('chatPanel').style.display = 'none';
+            document.getElementById('sessionBanner').style.display = 'none';
+        }
+
+        function updateSessionBanner() {
+            const meta = document.getElementById('sessionMeta');
+            meta.textContent = activeSessionId
+                ? `Session ${activeSessionId.slice(0, 8)} active. Ask follow-up tuning questions below.`
+                : 'Ask follow-up tuning questions in this session.';
+        }
+
+        function clearChatState(resetReport = true) {
+            activeSessionId = null;
+            chatHistory = [];
+            document.getElementById('chatInput').value = '';
+            updateSessionBanner();
+            hideChatPanel();
+            if (resetReport) {
+                document.getElementById('reportContent').innerHTML =
+                    `<div class="empty-state"><div class="icon">&#x1F4CA;</div><p>Select a diagnostic profile and click <strong>Run Diagnosis</strong> to analyze your SQL Server.</p></div>`;
+            }
+        }
+
+        async function sendChatMessage() {
+            const input = document.getElementById('chatInput');
+            const btn = document.getElementById('btnSendChat');
+            const statusBar = document.getElementById('statusBar');
+            const statusText = document.getElementById('statusText');
+            const spinner = document.getElementById('spinner');
+            const message = input.value.trim();
+
+            if (!activeSessionId) {
+                alert('Start an investigation first.');
+                return;
+            }
+            if (!message) {
+                return;
+            }
+
+            btn.disabled = true;
+            input.disabled = true;
+            statusBar.style.display = 'flex';
+            spinner.style.display = 'inline-block';
+            statusText.textContent = 'Sending follow-up question...';
+
+            chatHistory.push({ role: 'user', content: message });
+            renderChatThread();
+            input.value = '';
+
+            try {
+                const resp = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: activeSessionId, message: message })
+                });
+                const data = await resp.json();
+
+                if (!resp.ok || data.error) {
+                    throw new Error(data.error || `HTTP ${resp.status}`);
+                }
+
+                chatHistory.push({ role: 'assistant', content: data.answer || 'No answer returned.' });
+                renderChatThread();
+
+                let stepsHtml = '';
+                (data.steps || []).forEach((s, i) => {
+                    if (s.includes('Executing:')) {
+                        stepsHtml += `<div class="query-chip has-data"><span class="count">${i + 1}</span><span class="label">${escapeHtml(s.substring(0, 60))}</span></div>`;
+                    }
+                });
+                document.getElementById('querySummary').innerHTML = stepsHtml;
+                statusText.textContent = `Chat response completed at ${new Date().toLocaleTimeString()}`;
+            } catch (err) {
+                chatHistory.push({ role: 'assistant', content: `Error: ${err.message}` });
+                renderChatThread();
+                statusText.textContent = `Error: ${err.message}`;
+            } finally {
+                spinner.style.display = 'none';
+                btn.disabled = false;
+                input.disabled = false;
+                input.focus();
+            }
+        }
+
+        async function endChatSession() {
+            const sessionId = activeSessionId;
+            clearChatState();
+            if (!sessionId) {
+                return;
+            }
+            try {
+                await fetch(`/api/chat/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+            } catch (e) {
+                // Session cleanup is best-effort.
+            }
+        }
+
+        document.getElementById('chatInput').addEventListener('keydown', function (event) {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                sendChatMessage();
+            }
+        });
     </script>
 </body>
 
