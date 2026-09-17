@@ -1,16 +1,11 @@
 """
-Resolve AI API credentials from provider-appropriate sources.
+Resolve AI API key from multiple sources so each DBA uses their own credentials.
 
-GitHub provider priority order:
+Priority order:
   1. GITHUB_TOKEN environment variable
   2. GitHub CLI: `gh auth token`
   3. VS Code Copilot OAuth token (auto-detected from VS Code's encrypted storage)
   4. config.yaml ai.api_key (fallback)
-
-Non-GitHub providers:
-  - Use config.yaml ai.api_key only.
-  - Header-based auth (for example Authorization in extra_headers) is handled
-    by the caller and does not require token auto-discovery here.
 
 For the Copilot endpoint (api.githubcopilot.com), the OAuth token is exchanged
 for a short-lived Copilot API token automatically.
@@ -38,25 +33,16 @@ COPILOT_HEADERS = {
 }
 
 
-def resolve_api_key(provider: str, config_key: str | None = None) -> str | None:
+def resolve_api_key(config_key: str | None = None) -> str | None:
     """
-    Resolve the API key for the selected provider.
+    Resolve the API key from environment, GitHub CLI, VS Code, or config fallback.
 
     Args:
-        provider: AI provider from config.yaml
         config_key: The api_key value from config.yaml (used as last resort)
 
     Returns:
         The resolved API key, or None if no source provides one.
     """
-    provider = (provider or "rules").lower()
-
-    if provider != "github":
-        if config_key:
-            logger.info("Using API key from config.yaml")
-            return config_key
-        return None
-
     # 1. Environment variable
     env_token = os.environ.get("GITHUB_TOKEN")
     if env_token:
@@ -73,9 +59,9 @@ def resolve_api_key(provider: str, config_key: str | None = None) -> str | None:
             logger.info("Using API key from GitHub CLI (gh auth token)")
             return result.stdout.strip()
     except FileNotFoundError:
-        pass
+        pass  # gh CLI not installed
     except Exception:
-        pass
+        pass  # timeout or other error
 
     # 3. VS Code Copilot OAuth token
     vscode_token = _get_vscode_github_token()
@@ -107,9 +93,11 @@ def get_copilot_token(oauth_token: str) -> Tuple[str, dict]:
     """
     global _copilot_token_cache, _copilot_token_expiry
 
+    # Return cached token if still valid (with 60s buffer)
     if _copilot_token_cache and time.time() < (_copilot_token_expiry - 60):
         return _copilot_token_cache, COPILOT_HEADERS
 
+    # Try token exchange with the provided token first, then VS Code token
     tokens_to_try = [oauth_token]
     vscode_token = _get_vscode_github_token()
     if vscode_token and vscode_token != oauth_token:
@@ -163,8 +151,9 @@ def _get_vscode_github_token() -> Optional[str]:
     Falls back to VS Code's DPAPI-encrypted safeStorage on failure.
     """
     if os.name != "nt":
-        return None
+        return None  # Only Windows supported
 
+    # --- Source 1: Windows Credential Manager (git:https://github.com) ---
     try:
         import ctypes
         import ctypes.wintypes
@@ -204,6 +193,7 @@ def _get_vscode_github_token() -> Optional[str]:
     except Exception as e:
         logger.debug("Windows Credential Manager read failed: %s", e)
 
+    # --- Source 2: VS Code DPAPI-encrypted safeStorage (legacy fallback) ---
     try:
         import base64
         import ctypes
@@ -227,7 +217,7 @@ def _get_vscode_github_token() -> Optional[str]:
             local_state = json.load(f)
         encrypted_key = base64.b64decode(
             local_state["os_crypt"]["encrypted_key"]
-        )[5:]
+        )[5:]  # Strip "DPAPI" prefix
 
         blob_in = DATA_BLOB(
             len(encrypted_key),
@@ -241,6 +231,7 @@ def _get_vscode_github_token() -> Optional[str]:
         aes_key = ctypes.string_at(blob_out.pbData, blob_out.cbData)
         ctypes.windll.kernel32.LocalFree(blob_out.pbData)
 
+        # Look for GitHub session secret stored by vscode.github-authentication extension
         db = sqlite3.connect(db_path)
         row = db.execute(
             "SELECT value FROM ItemTable WHERE key LIKE ?",
@@ -255,8 +246,8 @@ def _get_vscode_github_token() -> Optional[str]:
 
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
         decrypted = AESGCM(aes_key).decrypt(
-            raw[3:15],
-            raw[15:],
+            raw[3:15],    # 12-byte nonce
+            raw[15:],     # ciphertext + tag
             None,
         ).decode("utf-8")
 

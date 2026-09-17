@@ -66,6 +66,12 @@ class AIAnalyzer:
     MAX_ROWS_PER_QUERY = 10
     MAX_RESULT_CHARS = 12000
 
+    def _has_configured_auth(self) -> bool:
+        """Return True when the selected provider has enough auth configured."""
+        if self.provider == "openai":
+            return bool(self.api_key or (self.extra_headers or {}).get("Authorization"))
+        return bool(self.api_key)
+
     def __init__(self, provider: str = "openai",
                  api_key: Optional[str] = None,
                  api_base: Optional[str] = None,
@@ -80,7 +86,7 @@ class AIAnalyzer:
         self.extra_headers = extra_headers
         self.last_api_endpoint = "rule-based"
 
-        if provider in ("openai", "azure", "github") and not api_key:
+        if provider in ("openai", "azure", "github") and not self._has_configured_auth():
             logger.warning("No API key configured — falling back to rule-based analysis")
             self.provider = "rules"
 
@@ -162,13 +168,18 @@ class AIAnalyzer:
             logger.error("openai package not installed. pip install openai")
             return self._analyze_rules(diagnostic_results, context, profile_name)
 
-        kwargs = {"api_key": self.api_key}
+        headers = {
+            k: v for k, v in (self.extra_headers or {}).items() if v is not None
+        }
+        api_key = self.api_key
+        if headers.get("Authorization") and not api_key:
+            api_key = "unused"
+
+        kwargs = {"api_key": api_key}
         if self.api_base:
             kwargs["base_url"] = self.api_base
-        if self.extra_headers:
-            kwargs["default_headers"] = {
-                k: v for k, v in self.extra_headers.items() if v is not None
-            }
+        if headers:
+            kwargs["default_headers"] = headers
         client = OpenAI(**kwargs)
         user_prompt = self._build_user_prompt(diagnostic_results, context, profile_name)
 
@@ -221,7 +232,7 @@ class AIAnalyzer:
             logger.error("openai package not installed. pip install openai")
             return self._analyze_rules(diagnostic_results, context, profile_name)
 
-        from analyzer.token_resolver import get_copilot_token
+        from analyzer.token_resolver_Backup import get_copilot_token
 
         user_prompt = self._build_user_prompt(diagnostic_results, context, profile_name)
         messages = [

@@ -51,7 +51,7 @@ def create_app(config: dict) -> Flask:
     )
 
     ai = config.get("ai", {})
-    api_key = resolve_api_key(ai.get("api_key"))
+    api_key = resolve_api_key(ai.get("provider", "rules"), ai.get("api_key"))
     _analyzer = AIAnalyzer(
         provider=ai.get("provider", "rules"),
         api_key=api_key,
@@ -174,10 +174,11 @@ def register_routes(app: Flask):
             return jsonify({"error": "No problem description provided"}), 400
 
         ai = _config.get("ai", {})
-        api_key = resolve_api_key(ai.get("api_key"))
+        provider = ai.get("provider", "rules")
+        api_key = resolve_api_key(provider, ai.get("api_key"))
         agent = DBAAgent(
             connector=_connector,
-            provider=ai.get("provider", "rules"),
+            provider=provider,
             api_key=api_key,
             api_base=ai.get("api_base"),
             model=ai.get("model", "gpt-4o"),
@@ -245,10 +246,11 @@ def register_routes(app: Flask):
             return jsonify({"error": "Session not found or expired"}), 404
 
         ai = _config.get("ai", {})
-        api_key = resolve_api_key(ai.get("api_key"))
+        provider = session.get("provider", ai.get("provider", "rules"))
+        api_key = resolve_api_key(provider, ai.get("api_key"))
         agent = DBAAgent(
             connector=_connector,
-            provider=session.get("provider", ai.get("provider", "rules")),
+            provider=provider,
             api_key=api_key,
             api_base=ai.get("api_base"),
             model=session.get("model", ai.get("model", "gpt-4o")),

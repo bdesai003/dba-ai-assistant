@@ -289,6 +289,12 @@ class DBAAgent:
         self.extra_headers = extra_headers
         self.last_api_endpoint = "rule-based"
 
+    def _has_configured_auth(self) -> bool:
+        """Return True when the selected provider has enough auth configured."""
+        if self.provider == "openai":
+            return bool(self.api_key or (self.extra_headers or {}).get("Authorization"))
+        return bool(self.api_key)
+
     def _get_client(self, base_url: str = None, api_key: str = None,
                     extra_headers: dict = None):
         """Create the appropriate OpenAI client."""
@@ -308,13 +314,18 @@ class DBAAgent:
                 azure_endpoint=self.api_base,
             )
         else:  # openai (or compatible endpoint)
+            headers = {
+                k: v for k, v in (extra_headers or self.extra_headers or {}).items()
+                if v is not None
+            }
+            if headers.get("Authorization") and not key:
+                key = "unused"
+
             kwargs = {"api_key": key}
             if self.api_base:
                 kwargs["base_url"] = self.api_base
-            if self.extra_headers or extra_headers:
-                headers = extra_headers or self.extra_headers
-                # Filter out None values to avoid header errors
-                kwargs["default_headers"] = {k: v for k, v in headers.items() if v is not None}
+            if headers:
+                kwargs["default_headers"] = headers
             return OpenAI(**kwargs)
 
     def _call_ai(self, client, messages: List[Dict], tools=None):
@@ -338,7 +349,7 @@ class DBAAgent:
 
     def _call_github_ai(self, messages: List[Dict], tools=None):
         """Call GitHub AI endpoints with automatic Copilot token exchange fallback."""
-        from analyzer.token_resolver import get_copilot_token
+        from analyzer.token_resolver_Backup import get_copilot_token
 
         kwargs = dict(
             model=self.model, messages=messages,
@@ -577,8 +588,9 @@ class DBAAgent:
                     "(openai, azure, or github). Rule-based mode cannot "
                     "generate dynamic queries. Set ai.provider in config.yaml.")
 
-        if not self.api_key:
-            return "Error: No API key configured. Set ai.api_key in config.yaml."
+        if not self._has_configured_auth():
+            return ("Error: No API credentials configured. Set ai.api_key or "
+                    "ai.extra_headers.Authorization in config.yaml.")
         return None
 
     def _run_loop(self, messages: List[Dict], investigation_log: list,

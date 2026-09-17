@@ -58,7 +58,7 @@ def build_connector(config: dict) -> SQLServerConnector:
 def build_analyzer(config: dict) -> AIAnalyzer:
     """Build AIAnalyzer from config."""
     ai = config.get("ai", {})
-    api_key = resolve_api_key(ai.get("api_key"))
+    api_key = resolve_api_key(ai.get("provider", "rules"), ai.get("api_key"))
     return AIAnalyzer(
         provider=ai.get("provider", "rules"),
         api_key=api_key,
@@ -238,7 +238,7 @@ def cmd_investigate(args, config):
     connector = build_connector(config)
     ai = config.get("ai", {})
 
-    api_key = resolve_api_key(ai.get("api_key"))
+    api_key = resolve_api_key(ai.get("provider", "rules"), ai.get("api_key"))
     agent = DBAAgent(
         connector=connector,
         provider=ai.get("provider", "rules"),
