@@ -33,6 +33,22 @@ class SQLServerConnector:
         self.encrypt = encrypt
         self.trust_server_certificate = trust_server_certificate
 
+    def _has_sql_credentials(self) -> bool:
+        """Return True when SQL authentication credentials are fully configured."""
+        has_username = bool(self.username)
+        has_password = bool(self.password)
+        if has_username != has_password:
+            raise ValueError("Both username and password are required for SQL authentication")
+        return has_username and has_password
+
+    def auth_description(self) -> str:
+        """Return a short human-readable authentication description."""
+        if self._has_sql_credentials():
+            return f"SQL login: {self.username}"
+        if self.trusted_connection:
+            return "Windows authentication"
+        return "Authentication not configured"
+
     def _build_connection_string(self) -> str:
         parts = [
             f"DRIVER={self.driver}",
@@ -43,13 +59,15 @@ class SQLServerConnector:
             f"Encrypt={'yes' if self.encrypt else 'no'}",
             f"TrustServerCertificate={'yes' if self.trust_server_certificate else 'no'}",
         ]
-        if self.trusted_connection:
-            parts.append("Trusted_Connection=yes")
-        else:
-            if not self.username or not self.password:
-                raise ValueError("Username and password required for SQL authentication")
+        if self._has_sql_credentials():
             parts.append(f"UID={self.username}")
             parts.append(f"PWD={self.password}")
+        elif self.trusted_connection:
+            parts.append("Trusted_Connection=yes")
+        else:
+            raise ValueError(
+                "Set username/password for SQL authentication or trusted_connection=true for Windows authentication"
+            )
         return ";".join(parts)
 
     @contextmanager

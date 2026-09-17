@@ -79,7 +79,8 @@ def register_routes(app: Flask):
     def index():
         return render_template("index.html",
                                profiles=DIAGNOSTIC_PROFILES,
-                               server=_config["sql_server"]["server"])
+                               server=_config["sql_server"]["server"],
+                               connected_as=_connector.auth_description())
 
     @app.route("/api/test-connection", methods=["POST"])
     def api_test_connection():
